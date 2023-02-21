@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - interactive particles</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<audio
+			src="./sounds/pixel.mp3" id="pixel">
+			</audio>
+		<audio
+			src="./sounds/pixel1.mp3" id="pixel1">
+			</audio>
+		<audio
+			src="./sounds/pixel2.mp3" id="pixel2">
+			</audio>
+		
+		<style>
+			/* orbit control style */
+			body {
+				background-color: #ccc;
+				color: #000;
+			}
+
+			a {
+				color: #f00;
+			}
+		</style>
+	</head>
+
+	<body>
+		<div id="container"></div>
+		<!-- <div id="info"><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> webgl - interactive - particles</div> -->
+
+		<script type="x-shader/x-vertex" id="vertexshader">
+
+			attribute float size;
+			attribute vec3 customColor;
+
+			varying vec3 vColor;
+
+			void main() {
+
+				vColor = customColor;
+
+				vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+
+				gl_PointSize = size * ( 300.0 / -mvPosition.z );
+
+				gl_Position = projectionMatrix * mvPosition;
+
+			}
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="fragmentshader">
+
+			uniform vec3 color;
+			uniform sampler2D pointTexture;
+			uniform float alphaTest;
+
+			varying vec3 vColor;
+
+			void main() {
+
+				gl_FragColor = vec4( color * vColor, 1.0 );
+
+				gl_FragColor = gl_FragColor * texture2D( pointTexture, gl_PointCoord );
+
+				if ( gl_FragColor.a < alphaTest ) discard;
+
+			}
+
+		</script>
+
+		<!-- Import maps polyfill -->
+		<!-- Remove this when import maps will be widely supported -->
+		<script async src="https://unpkg.com/es-module-shims@1.3.6/dist/es-module-shims.js"></script>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.module.js"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import Stats from '/three_Utils/stats.module.js';
+
+			import { OrbitControls } from '/three_Utils/OrbitControls.js'; //oc import
+
+			import * as BufferGeometryUtils from '/three_Utils/BufferGeometryUtils.js';
+
+			let renderer, scene, camera, stats, controls;
+			
+			let duststats, particleSystem, uniforms, dustgeometry;
+			
+			const dustNum = 100;
+
+			let particles;
+			let ringMesh;
+			var idleTime;
+			let playing = false;
+
+			const PARTICLE_SIZE = 60;
+			
+			var dustArr = [];
+
+			let raycaster, intersects;
+			let pointer, INTERSECTED;
+			
+			let string = ['pixel', 'pixel1', 'pixel2'];
+			let audioElement = document.getElementById(string[0]); 
+        	let audioCtx = new AudioContext();
+			// let audioElement2 = document.getElementById(string[1]); 
+        	// let audioCtx2 = new AudioContext();
+			// let audioElement2 = document.getElementById(string[2]); 
+        	// let audioCtx2 = new AudioContext();
+        	// let analyzer = audioCtx.createAnalyser();
+        	// analyzer.maxDecibels = -5;
+        	// analyzer.fftSize = 8192;
+        	// let source = audioCtx.createMediaElementSource(audioElement);
+        	// source.connect(analyzer);
+        	// source.connect(audioCtx.destination);
+        	// let data = new Uint8Array(analyzer.frequencyBinCount);
+
+			
+
+			window.addEventListener('click', (event) => {
+				if (audioCtx.state === 'suspended') {
+					audioCtx.resume();
+				}
+			});
+
+
+			window.addEventListener('keyup', (event) => {
+			if(event.keyCode === 49 && playing == false) {
+				audioElement.play();
+				playing = true;
+			} else if (event.keyCode == 51 && playing == true){
+				audioElement.pause();
+				playing = false;
+		
+			}});
+
+			window.addEventListener('resize', onWindowResize); 
+            document.addEventListener("keyup", function (event) {
+                if (event.keyCode === 70) { // This keycode points to the F key
+                    if (getFullscreenElement()) {
+                        document.exitFullscreen(); // If getFullScreenElement returns true we exit fullscreen 
+                                                   // else we request to go fullscreen
+                    } else {
+                        document.documentElement.requestFullscreen();
+                    }
+                }
+				else if (event.keyCode === 82) {
+					window.location.reload();
+				}
+            });
+
+			window.onload = function() {
+  				inactivityTime();
+			}
+			
+			
+
+			init();
+			animate();
+
+			function init() {
+
+				const container = document.getElementById( 'container' );
+
+				scene = new THREE.Scene();
+				//orbit control fog
+				scene.background = new THREE.Color( 0x00000f );
+				scene.fog = new THREE.FogExp2( 0x0000ff, 0.002 );
+
+			
+				renderer = new THREE.WebGLRenderer( {antialias:true});
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild(renderer.domElement);
+
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
+				camera.position.set(0, 0, 300);
+
+				const listener = new THREE.AudioListener();
+				camera.add(listener);
+				const sound = new THREE.PositionalAudio(listener);
+				const audioLoader = new THREE.AudioLoader();
+					audioLoader.load( 'sounds/static.mp3', function( buffer ) {
+						sound.setBuffer( buffer );
+						sound.setRefDistance( 15 );
+						sound.loop = true;
+						sound.play();
+					});
+
+
+
+				container.appendChild( renderer.domElement )
+
+				// dustStats = new Stats();
+				// container.appendChild( dustStats.dom );
+
+				// controls
+
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.listenToKeyEvents( window ); // optional
+
+				//controls.addEventListener( 'change', render ); // call this only in static scenes (i.e., if there is no animation loop)
+
+				controls.enableDamping = true; // an animation loop is required when either damping or auto-rotation are enabled
+				controls.dampingFactor = 0.05;
+
+				controls.screenSpacePanning = false;
+
+				controls.minDistance = 0;
+				controls.maxDistance = 250;
+
+				controls.maxPolarAngle = Math.PI / 2;
+
+				// planet -> add glow
+				var planetGeometry = new THREE.SphereGeometry( 20, 20, 60);
+				var planetmaterial = new THREE.MeshPhongMaterial();
+				var center = new THREE.Mesh(planetGeometry, planetmaterial);
+				scene.add(center);
+				planetmaterial.map = new THREE.TextureLoader().load("image/merc.png");
+				center.add(sound);
+
+				var glowGeometry = new THREE.SphereGeometry( 22, 20, 60);
+				var glowMaterial = new THREE.MeshBasicMaterial({
+					color:0x0000ff,
+					opacity: 0.3,
+					transparent: true,
+				});
+				var mesh = new THREE.Mesh(glowGeometry, glowMaterial);
+				scene.add(mesh);
+				
+
+				let ring2Geometry = new THREE.RingGeometry( 35, 75, 40, 5, 400);
+				var glowMaterial = new THREE.MeshBasicMaterial({
+					color:0xffffff,
+					opacity: 0.3,
+					transparent: true,
+					wireframe: true,
+				});
+				ringMesh = new THREE.Mesh(ring2Geometry, glowMaterial);
+				scene.add(ringMesh);
+				//
+				var planetGeometry2 = new THREE.SphereGeometry( 15, 15, 60);
+				var planetmaterial2 = new THREE.MeshBasicMaterial({color:0x0f0f0f,});
+				var mesh = new THREE.Mesh(planetGeometry2, planetmaterial2);
+				scene.add(mesh);
+				mesh.position.x = 130;
+				mesh.position.y = 70;
+				mesh.position.z = 50;
+				planetmaterial2.map = new THREE.TextureLoader().load("image/plan.png");
+				
+				var glowGeometry2 = new THREE.SphereGeometry( 17, 15, 60);
+				var glowMaterial2 = new THREE.MeshBasicMaterial({
+					color:0xb3b569,
+					opacity: 0.2,
+					transparent: true,
+				});
+				var mesh = new THREE.Mesh(glowGeometry2, glowMaterial2);
+				scene.add(mesh);
+				mesh.position.x = 130;
+				mesh.position.y = 70;
+				mesh.position.z = 50;
+
+				var planetGeometry3 = new THREE.SphereGeometry( 30, 30, 60);
+				var planetmaterial3 = new THREE.MeshBasicMaterial({color:0x0f0f0f,});
+				var mesh = new THREE.Mesh(planetGeometry3, planetmaterial3);
+				scene.add(mesh);
+				mesh.position.x = -105;
+				mesh.position.y = -50;
+				mesh.position.z = 30;
+				planetmaterial3.map = new THREE.TextureLoader().load("image/sun3.png");
+
+				var glowGeometry3 = new THREE.SphereGeometry( 32, 30, 60);
+				var glowMaterial3 = new THREE.MeshBasicMaterial({
+					color:0xb59969,
+					opacity: 0.1,
+					transparent: true,
+				});
+				var mesh = new THREE.Mesh(glowGeometry3, glowMaterial3);
+				scene.add(mesh);
+				mesh.position.x = -105;
+				mesh.position.y = -50;
+				mesh.position.z = 30;
+
+
+				dustgeometry = new THREE.SphereGeometry( 1, 1, 4 );
+				//dustgeometry = new THREE.BufferGeometry();
+				// const positions = [];
+				// const colors = [];
+				// const sizes = [];
+				//
+
+
+				for ( let i = 0; i < 150; i ++ ) {
+
+					
+
+					const object = new THREE.Mesh( dustgeometry, new THREE.MeshBasicMaterial( { color: 0xffffff } ) );
+
+					object.position.x = Math.random() * 800 - 400;
+					object.position.y = Math.random() * 800 - 400;
+					object.position.z = Math.random() * 800 - 400;
+
+					// object.rotation.x = Math.random() * 2 * Math.PI;
+					// object.rotation.y = Math.random() * 2 * Math.PI;
+					// object.rotation.z = Math.random() * 2 * Math.PI;
+
+					// object.scale.x = Math.random() + 0.5;
+					// object.scale.y = Math.random() + 0.5;
+					// object.scale.z = Math.random() + 0.5;
+
+					scene.add(object);
+
+				}
+
+				duststats = new Stats();
+				container.appendChild( duststats.dom );
+			
+
+				let boxGeometry = new THREE.RingGeometry( 40, 70, 40, 5,1000);
+
+				// if normal and uv attributes are not removed, mergeVertices() can't consolidate indentical vertices with different normal/uv data
+
+				boxGeometry.deleteAttribute( 'normal' );
+				boxGeometry.deleteAttribute( 'uv' );
+
+				boxGeometry = BufferGeometryUtils.mergeVertices( boxGeometry );
+
+				
+
+				
+				const positionAttribute = boxGeometry.getAttribute( 'position' );
+
+				const colors = [];
+				const sizes = [];
+
+				const color = new THREE.Color();
+
+				for ( let i = 0, l = positionAttribute.count; i < l; i ++ ) {
+
+					color.setHSL( 0.01 + 0.1 * ( i / l ), 0.7, 0.8 );
+					color.toArray( colors, i * 3 );
+
+					sizes[ i ] = PARTICLE_SIZE * 1;
+
+				}
+
+				const dirLight1 = new THREE.DirectionalLight( 0xffffff );
+				dirLight1.position.set( 1, 1, 1 );
+				scene.add( dirLight1 );
+
+
+				const pointLight = new THREE.PointLight( 0xff0000, 100, 100 );
+				pointLight.position.set( 10, 10, 10 );
+				scene.add( pointLight );
+
+				// const dirLight2 = new THREE.DirectionalLight( 0x002288 );
+				// dirLight2.position.set( - 1, - 1, - 1 );
+				// scene.add( dirLight2 );
+
+				const ambientLight = new THREE.AmbientLight( 0x222222 );
+				scene.add( ambientLight );
+
+
+				const geometry = new THREE.BufferGeometry();
+				geometry.setAttribute( 'position', positionAttribute );
+				geometry.setAttribute( 'customColor', new THREE.Float32BufferAttribute( colors, 3 ) );
+				geometry.setAttribute( 'size', new THREE.Float32BufferAttribute( sizes, 1 ) );
+
+				//
+
+				const material = new THREE.ShaderMaterial( {
+
+					uniforms: {
+						color: { value: new THREE.Color( 0xffffff ) },
+						pointTexture: { value: new THREE.TextureLoader().load( '/image/dust.png' ) },
+						alphaTest: { value: 0.9 }
+					},
+					vertexShader: document.getElementById( 'vertexshader' ).textContent,
+					fragmentShader: document.getElementById( 'fragmentshader' ).textContent
+
+				} );
+				//
+
+				particles = new THREE.Points( geometry, material );
+				scene.add( particles );
+
+				//
+
+				
+				container.appendChild( renderer.domElement );
+
+				//
+
+				raycaster = new THREE.Raycaster();
+				pointer = new THREE.Vector2();
+
+				//
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				
+				window.addEventListener( 'resize', onWindowResize );
+				document.addEventListener( 'pointermove', onPointerMove );
+
+			}
+
+			function onPointerMove( event ) {
+
+				pointer.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+				pointer.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
+
+			}
+
+			function onWindowResize() {
+				
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			var inactivityTime = function () {
+			var time;
+			window.onload = resetTimer;
+			// DOM Events
+			document.onmousemove = resetTimer;
+			document.onkeydown = resetTimer;
+			document.onmousemove = resetTimer;
+			document.onclick = resetTimer;
+
+			
+			function idle() {
+				let random = Math.random() * 200;
+				camera.position.set(random,random,random)
+			}
+
+			function resetTimer() {
+				clearTimeout(time);
+				time = setTimeout(idle, 30000)
+				// 1000 milliseconds = 1 second
+			}
+			};
+			
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				// inactivityTime++;
+				
+				controls.update();
+
+				render();
+				stats.update();
+				duststats.update();
+			}
+			
+        // function that handles getting the fullscreen element based on what browser you are using
+        function getFullscreenElement() {
+            return document.fullscreenElement   //standard property
+                || document.webkitFullscreenElement //safari/opera support
+                || document.mozFullscreenElement    //firefox support
+                || document.msFullscreenElement;    //ie/edge support
+        }
+        // Exit fullscreen if this method is called
+        function toggleFullscreen() {
+            if (getFullscreenElement()) {
+                document.exitFullscreen();
+            }
+        }
+
+
+			function render() {
+
+				particles.rotation.x += 0.001;
+				particles.rotation.z += 0.0005;
+
+				ringMesh.rotation.x += 0.001;
+				ringMesh.rotation.z += 0.0005;
+
+
+				const geometry = particles.geometry;
+				const attributes = geometry.attributes;
+
+				raycaster.setFromCamera( pointer, camera );
+
+				intersects = raycaster.intersectObject( particles );
+
+				if ( intersects.length > 0 ) {
+
+					if ( INTERSECTED != intersects[ 0 ].index ) {
+
+						attributes.size.array[ INTERSECTED ] = PARTICLE_SIZE;
+
+						INTERSECTED = intersects[ 0 ].index;
+
+						attributes.size.array[ INTERSECTED ] = PARTICLE_SIZE * 1.25;
+						attributes.size.needsUpdate = true;
+
+					}
+
+				} else if ( INTERSECTED !== null ) {
+
+					attributes.size.array[ INTERSECTED ] = PARTICLE_SIZE;
+					attributes.size.needsUpdate = true;
+					INTERSECTED = null;
+
+				}
+
+				renderer.render( scene, camera );
+
+
+			}
+
+		</script>
+
+	</body>
+
+</html>
